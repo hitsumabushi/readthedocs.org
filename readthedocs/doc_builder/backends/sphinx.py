@@ -248,11 +248,96 @@ class LatexBuildCommand(BuildCommand):
             self.exit_code = 0
 
 
+#class PdfBuilder(BaseSphinx):
+#    type = 'sphinx_pdf'
+#    sphinx_build_dir = '_build/latex'
+#    pdf_file_name = None
+#
+#    def build(self, **kwargs):
+#        self.clean()
+#        cwd = self.project.conf_dir(self.version.slug)
+#
+#        # Default to this so we can return it always.
+#        self.run(
+#            'python',
+#            self.python_env.venv_bin(filename='sphinx-build'),
+#            '-b', 'latex',
+#            '-D', 'language={lang}'.format(lang=self.project.language),
+#            '-d', '_build/doctrees',
+#            '.',
+#            '_build/latex',
+#            cwd=cwd,
+#            bin_path=self.python_env.venv_bin()
+#        )
+#        latex_cwd = os.path.join(cwd, '_build', 'latex')
+#        tex_files = glob(os.path.join(latex_cwd, '*.tex'))
+#
+#        if not tex_files:
+#            raise BuildEnvironmentError('No TeX files were found')
+#
+#        # Run LaTeX -> PDF conversions
+#        pdflatex_cmds = [
+#            ['pdflatex',
+#                '-interaction=nonstopmode',
+#                tex_file]
+#            for tex_file in tex_files]
+#        makeindex_cmds = [
+#            ['makeindex',
+#                '-s',
+#                'python.ist',
+#                '{0}.idx'.format(
+#                    os.path.splitext(os.path.relpath(tex_file, latex_cwd))[0])]
+#            for tex_file in tex_files]
+#
+#        pdf_commands = []
+#        for cmd in pdflatex_cmds:
+#            cmd_ret = self.build_env.run_command_class(
+#                cls=LatexBuildCommand, cmd=cmd, cwd=latex_cwd, warn_only=True)
+#            pdf_commands.append(cmd_ret)
+#        for cmd in makeindex_cmds:
+#            cmd_ret = self.build_env.run_command_class(
+#                cls=LatexBuildCommand, cmd=cmd, cwd=latex_cwd, warn_only=True)
+#            pdf_commands.append(cmd_ret)
+#        for cmd in pdflatex_cmds:
+#            cmd_ret = self.build_env.run_command_class(
+#                cls=LatexBuildCommand, cmd=cmd, cwd=latex_cwd, warn_only=True)
+#            pdf_match = PDF_RE.search(cmd_ret.output)
+#            if pdf_match:
+#                self.pdf_file_name = pdf_match.group(1).strip()
+#            pdf_commands.append(cmd_ret)
+#        return all(cmd.successful for cmd in pdf_commands)
+#
+#    def move(self, **kwargs):
+#        if not os.path.exists(self.target):
+#            os.makedirs(self.target)
+#
+#        exact = os.path.join(self.old_artifact_path, "%s.pdf" % self.project.slug)
+#        exact_upper = os.path.join(
+#            self.old_artifact_path,
+#            "%s.pdf" % self.project.slug.capitalize())
+#
+#        if self.pdf_file_name and os.path.exists(self.pdf_file_name):
+#            from_file = self.pdf_file_name
+#        if os.path.exists(exact):
+#            from_file = exact
+#        elif os.path.exists(exact_upper):
+#            from_file = exact_upper
+#        else:
+#            from_globs = glob(os.path.join(self.old_artifact_path, "*.pdf"))
+#            if from_globs:
+#                from_file = max(from_globs, key=os.path.getmtime)
+#            else:
+#                from_file = None
+#        if from_file:
+#            to_file = os.path.join(self.target, "%s.pdf" % self.project.slug)
+#            self.run('mv', '-f', from_file, to_file)
+
 class PdfBuilder(BaseSphinx):
     type = 'sphinx_pdf'
     sphinx_build_dir = '_build/latex'
     pdf_file_name = None
 
+    @restoring_chdir
     def build(self, **kwargs):
         self.clean()
         cwd = self.project.conf_dir(self.version.slug)
@@ -275,30 +360,53 @@ class PdfBuilder(BaseSphinx):
         if not tex_files:
             raise BuildEnvironmentError('No TeX files were found')
 
-        # Run LaTeX -> PDF conversions
-        pdflatex_cmds = [
-            ['pdflatex',
+        # change directory for cls file
+        base_dir = os.getcwd()
+        os.chdir(latex_cwd)
+
+        # Run Images -> xbb conversions
+        image_files = []
+        for pattern in ["*.pdf", "*.png", "*.gif", "*.jpg", "*.jpeg"]:
+            image_files += glob(os.path.join(latex_cwd, pattern))
+        extractbb_cmds = [
+            ['extractbb', image_file]
+            for image_file in image_files]
+
+        # Run LaTeX -> DVI conversions
+        platex_cmds = [
+            ['platex',
                 '-interaction=nonstopmode',
+                '-kanji=utf8',
                 tex_file]
             for tex_file in tex_files]
+        index_files = glob(os.path.join(latex_cwd, '*.idx'))
         makeindex_cmds = [
-            ['makeindex',
+            ['mendex',
+                '-U',
+                '-f',
+                '-d',
+                '{0}.dic'.format(
+                    os.path.splitext(os.path.relpath(index_file))[0]),
                 '-s',
                 'python.ist',
-                '{0}.idx'.format(
-                    os.path.splitext(os.path.relpath(tex_file, latex_cwd))[0])]
-            for tex_file in tex_files]
+                index_file]
+            for index_file in index_files]
+
+        # Run DVI -> PDF conversions
+        dvi_files = glob(os.path.join(latex_cwd, '*.dvi'))
+        dvipdfmx_cmds = [
+            ['dvipdfmx', dvi_file]
+            for dev_file in dvi_files]
 
         pdf_commands = []
-        for cmd in pdflatex_cmds:
-            cmd_ret = self.build_env.run_command_class(
-                cls=LatexBuildCommand, cmd=cmd, cwd=latex_cwd, warn_only=True)
-            pdf_commands.append(cmd_ret)
-        for cmd in makeindex_cmds:
-            cmd_ret = self.build_env.run_command_class(
-                cls=LatexBuildCommand, cmd=cmd, cwd=latex_cwd, warn_only=True)
-            pdf_commands.append(cmd_ret)
-        for cmd in pdflatex_cmds:
+        for cmds in [extractbb_cmds, platex_cmds]:
+        #for cmds in [extractbb_cmds, platex_cmds, platex_cmds, platex_cmds,
+        #        makeindex_cmds, platex_cmds, platex_cmds]:
+            for cmd in cmds:
+                cmd_ret = self.build_env.run_command_class(
+                    cls=LatexBuildCommand, cmd=cmd, cwd=latex_cwd, warn_only=True)
+                pdf_commands.append(cmd_ret)
+        for cmd in dvipdfmx_cmds:
             cmd_ret = self.build_env.run_command_class(
                 cls=LatexBuildCommand, cmd=cmd, cwd=latex_cwd, warn_only=True)
             pdf_match = PDF_RE.search(cmd_ret.output)
